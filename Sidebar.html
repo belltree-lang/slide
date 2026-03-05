@@ -2,164 +2,93 @@
 <html>
 <head>
   <base target="_top">
-
   <style>
-    body {
-      font-family: Arial, sans-serif;
-      padding: 14px;
-    }
-
-    label {
-      font-weight: 600;
-      display: block;
-      margin-top: 10px;
-    }
-
-    input, textarea {
-      width: 100%;
-      box-sizing: border-box;
-      padding: 8px;
-      margin-top: 6px;
-    }
-
-    button {
-      margin-top: 14px;
-      width: 100%;
-      padding: 12px;
-      font-weight: 700;
-      cursor: pointer;
-    }
-
-    .small {
-      font-size: 12px;
-      opacity: 0.8;
-    }
-
-    .ok {
-      color: #0a7;
-    }
-
-    .ng {
-      color: #c00;
-      white-space: pre-wrap;
-    }
-
-    .loading {
-      color: #444;
-    }
-
+    body { font-family: Arial, sans-serif; padding: 14px; }
+    label { font-weight: 600; display: block; margin-top: 10px; }
+    input, textarea, select { width: 100%; box-sizing: border-box; padding: 8px; margin-top: 6px; }
+    button { margin-top: 14px; width: 100%; padding: 12px; font-weight: 700; cursor: pointer; }
+    .small { font-size: 12px; opacity: 0.85; }
+    .ok { color: #0a7; }
+    .ng { color: #c00; white-space: pre-wrap; }
+    .loading { color: #444; }
   </style>
 </head>
-
 <body>
+  <div class="small">OpenAI Responses APIで研修スライドを生成します（Structured Output JSON対応）。</div>
 
-<div class="small">
-テーマ / 枚数 / テンプレIDを指定して研修スライドを生成します。
-</div>
+  <label>タイトル</label>
+  <input id="title" value="ストレッチ研修">
 
+  <label>テーマ</label>
+  <textarea id="theme" rows="5">ストレッチの効果について／トレーナーとしてパートナーストレッチを行う上での専門的ノウハウと考え方の共有</textarea>
 
-<label>タイトル</label>
-<input id="title" value="ストレッチ研修">
+  <label>ページ数（5〜30）</label>
+  <input id="pageCount" type="number" min="5" max="30" value="15">
 
+  <label>対象（任意）</label>
+  <input id="audience" value="高齢者向けフィットネス施設のトレーナー（鍼灸師・健康運動指導士含む）">
 
-<label>テーマ</label>
-<textarea id="theme" rows="5">
-ストレッチの効果について／トレーナーとしてパートナーストレッチを行う上での専門的ノウハウと考え方の共有
-</textarea>
+  <label>トーン（任意）</label>
+  <input id="tone" value="専門的だが現場で使える。安全性と標準化を重視。">
 
+  <label>カリキュラム難易度</label>
+  <select id="curriculumLevel">
+    <option>初級</option>
+    <option selected>初級〜中級</option>
+    <option>中級</option>
+    <option>中級〜上級</option>
+    <option>上級</option>
+  </select>
 
-<label>ページ数（5〜30）</label>
-<input id="pageCount" type="number" min="5" max="30" value="15">
+  <label>テンプレのプレゼンID（任意）</label>
+  <input id="templatePresentationId" placeholder="例：1AbC...（URLの /d/ と /edit の間）">
 
+  <button type="button" id="runBtn">生成</button>
+  <div id="status" class="small" style="margin-top:10px;"></div>
 
-<label>対象（任意）</label>
-<input id="audience" value="高齢者向けフィットネス施設のトレーナー（鍼灸師・健康運動指導士含む）">
+  <script>
+    const statusEl = document.getElementById('status');
+    const runBtn = document.getElementById('runBtn');
 
+    runBtn.addEventListener('click', run);
 
-<label>トーン（任意）</label>
-<input id="tone" value="専門的だが現場で使える。安全性と標準化を重視。">
+    function run() {
+      runBtn.disabled = true;
+      statusEl.className = 'small loading';
+      statusEl.textContent = '生成中…（20〜60秒ほど）';
 
+      const input = {
+        title: document.getElementById('title').value.trim(),
+        theme: document.getElementById('theme').value.trim(),
+        pageCount: Number(document.getElementById('pageCount').value),
+        audience: document.getElementById('audience').value.trim(),
+        tone: document.getElementById('tone').value.trim(),
+        curriculumLevel: document.getElementById('curriculumLevel').value,
+        templatePresentationId: document.getElementById('templatePresentationId').value.trim(),
+      };
 
-<label>テンプレのプレゼンID（任意）</label>
-<input id="templatePresentationId" placeholder="例：1AbC...（URLの /d/ と /edit の間）">
+      google.script.run
+        .withSuccessHandler(function(res) {
+          runBtn.disabled = false;
+          statusEl.className = 'small ok';
 
-<div class="small">
-既存の「べるフィット用デザイン」スライドをテンプレにしたい場合、そのプレゼンIDを入れてください。
-</div>
+          const goals = (res.curriculum && res.curriculum.learningGoals)
+            ? res.curriculum.learningGoals.map(g => `・${g}`).join('<br>')
+            : '（取得なし）';
 
-
-<button type="button" id="runBtn">生成</button>
-
-
-<div id="status" class="small" style="margin-top:10px;"></div>
-
-
-<script>
-
-const statusEl = document.getElementById("status");
-const runBtn = document.getElementById("runBtn");
-
-runBtn.addEventListener("click", run);
-
-function run(){
-
-  runBtn.disabled = true;
-
-  statusEl.className = "small loading";
-  statusEl.textContent = "生成中…（20〜40秒ほど）";
-
-
-  const input = {
-    title: document.getElementById("title").value.trim(),
-    theme: document.getElementById("theme").value.trim(),
-    pageCount: Number(document.getElementById("pageCount").value),
-    audience: document.getElementById("audience").value.trim(),
-    tone: document.getElementById("tone").value.trim(),
-    templatePresentationId:
-      document.getElementById("templatePresentationId").value.trim(),
-  };
-
-
-  try{
-
-    google.script.run
-      .withSuccessHandler(function(res){
-
-        runBtn.disabled = false;
-
-        statusEl.className = "small ok";
-
-        statusEl.innerHTML =
-          "生成完了<br>" +
-          `<a href="${res.presentationUrl}" target="_blank">スライドを開く</a><br>` +
-          `スライド枚数：${res.slideCount}`;
-
-      })
-      .withFailureHandler(function(err){
-
-        runBtn.disabled = false;
-
-        statusEl.className = "small ng";
-
-        statusEl.textContent =
-          "エラー\n" +
-          (err && err.message ? err.message : JSON.stringify(err));
-
-      })
-      .generateTrainingSlidesFromUi(input);
-
-  } catch(e){
-
-    runBtn.disabled = false;
-
-    statusEl.className = "small ng";
-    statusEl.textContent = "JSエラー\n" + e.message;
-
-  }
-
-}
-
-</script>
-
+          statusEl.innerHTML =
+            '生成完了<br>' +
+            `<a href="${res.presentationUrl}" target="_blank">スライドを開く</a><br>` +
+            `スライド枚数：${res.slideCount}<br>` +
+            `学習目標:<br>${goals}`;
+        })
+        .withFailureHandler(function(err) {
+          runBtn.disabled = false;
+          statusEl.className = 'small ng';
+          statusEl.textContent = 'エラー\n' + (err && err.message ? err.message : JSON.stringify(err));
+        })
+        .generateTrainingSlidesFromUi(input);
+    }
+  </script>
 </body>
 </html>
