@@ -1,362 +1,400 @@
 /**************************************
- * AI研修スライド生成システム (Google Apps Script)
- * - Sidebar UI
- * - OpenAI Responses API
- * - Structured Output JSON (json_schema)
- * - Slides自動生成
- * - テンプレ対応
- * - Retry処理
- * - speakerNotes対応
- * - カリキュラム生成
+ * Professional Trainer Slide Generator (Google Apps Script)
+ * Multi-stage AI pipeline:
+ * Theme -> Curriculum -> Slide Structure -> Slide Content -> Google Slides
  **************************************/
 
 const CFG = {
   OPENAI_ENDPOINT: 'https://api.openai.com/v1/responses',
   DEFAULT_MODEL: 'gpt-4o-mini',
-  APP_TITLE_PREFIX: '研修スライド：',
-  DEFAULT_PAGE_COUNT: 15,
-  MAX_PAGE_COUNT: 30,
-  MIN_PAGE_COUNT: 5,
+  APP_TITLE_PREFIX: 'Training Slides: ',
+  DEFAULT_PAGE_COUNT: 12,
+  MIN_PAGE_COUNT: 10,
+  MAX_PAGE_COUNT: 20,
   REQUEST_TIMEOUT_MS: 60 * 1000,
   RETRY_MAX: 3,
-  RETRY_BASE_SLEEP_MS: 800,
+  RETRY_BASE_SLEEP_MS: 900,
 };
 
 function onOpen() {
   SpreadsheetApp.getUi()
-    .createMenu('研修スライド生成')
-    .addItem('サイドバーを開く', 'openSlideGenSidebar')
-    .addSeparator()
-    .addItem('テスト生成（固定テーマ/15枚）', 'testGenerateSlides_')
+    .createMenu('Training Slide Generator')
+    .addItem('Open Sidebar', 'openSlideGenSidebar')
     .addToUi();
 }
 
 function openSlideGenSidebar() {
-  const html = HtmlService.createHtmlOutputFromFile('Sidebar').setTitle('研修スライド生成');
+  const html = HtmlService.createHtmlOutputFromFile('Sidebar').setTitle('Training Slide Generator');
   SpreadsheetApp.getUi().showSidebar(html);
 }
 
 function generateTrainingSlidesFromUi(input) {
-  return generateTrainingSlidesFromUi_(input);
-}
-
-function testGenerateSlides_() {
-  const result = generateTrainingSlidesFromUi_({
-    title: 'ストレッチ研修（テスト）',
-    theme: 'ストレッチの効果と安全なパートナーストレッチの現場運用',
-    pageCount: 15,
-    audience: '高齢者向けフィットネス施設のトレーナー',
-    tone: '専門的だが現場で使える。安全性と標準化を重視。',
-    templatePresentationId: '',
-    curriculumLevel: '初級〜中級',
-  });
-  Logger.log(result);
-}
-
-function generateTrainingSlidesFromUi_(input) {
   const normalized = validateInput_(input);
   const apiKey = getApiKey_();
   const model = getModel_();
 
-  const spec = buildSlideSpecWithAI_({
+  const curriculum = generateCurriculum({
     apiKey,
     model,
-    title: normalized.title,
     theme: normalized.theme,
-    pageCount: normalized.pageCount,
     audience: normalized.audience,
-    tone: normalized.tone,
-    curriculumLevel: normalized.curriculumLevel,
+    pageCount: normalized.pageCount,
   });
 
-  const presentationId = createSlidesFromSpec_({
-    spec,
+  const structure = generateSlideStructure({
+    apiKey,
+    model,
+    sections: curriculum.sections,
+    pageCount: normalized.pageCount,
+  });
+
+  const slideBlueprints = buildSlideBlueprints_(structure.slides, normalized.pageCount);
+  const slideContents = slideBlueprints.map((blueprint, index) => {
+    const content = generateSlideContent({
+      apiKey,
+      model,
+      section: blueprint.section,
+      slideIndex: index + 1,
+      slideCount: normalized.pageCount,
+      audience: normalized.audience,
+      tone: normalized.tone,
+    });
+
+    return {
+      section: blueprint.section,
+      title: content.title,
+      points: content.points,
+      trainer_tips: content.trainer_tips,
+      common_mistakes: content.common_mistakes,
+      speaker_notes: content.speaker_notes,
+    };
+  });
+
+  const presentationId = createSlides({
     title: normalized.title,
     templatePresentationId: normalized.templatePresentationId,
+    curriculum,
+    slides: slideContents,
   });
 
   return {
     ok: true,
     presentationId,
     presentationUrl: `https://docs.google.com/presentation/d/${presentationId}/edit`,
-    slideCount: spec.slides.length,
-    curriculum: spec.curriculum,
+    slideCount: slideContents.length,
+    sections: curriculum.sections,
   };
 }
 
 function validateInput_(input) {
-  if (!input) throw new Error('入力が空です');
+  if (!input) throw new Error('Input is empty');
 
   const title = String(input.title || '').trim();
   const theme = String(input.theme || '').trim();
   const pageCount = Number(input.pageCount || CFG.DEFAULT_PAGE_COUNT);
-  const audience = String(input.audience || '').trim() || '研修参加トレーナー';
-  const tone = String(input.tone || '').trim() || '実践重視';
+  const audience = String(input.audience || '').trim() || 'Professional trainers';
+  const tone = String(input.tone || '').trim() || 'Practical, safety-first, field-ready';
   const templatePresentationId = String(input.templatePresentationId || '').trim();
-  const curriculumLevel = String(input.curriculumLevel || '').trim() || '初級〜中級';
 
-  if (!title) throw new Error('タイトルが未入力です');
-  if (!theme) throw new Error('テーマが未入力です');
-
-  if (!Number.isFinite(pageCount)) throw new Error('ページ数が不正です');
+  if (!title) throw new Error('Title is required');
+  if (!theme) throw new Error('Theme is required');
+  if (!Number.isFinite(pageCount)) throw new Error('Page count is invalid');
   if (pageCount < CFG.MIN_PAGE_COUNT || pageCount > CFG.MAX_PAGE_COUNT) {
-    throw new Error(`ページ数は ${CFG.MIN_PAGE_COUNT}〜${CFG.MAX_PAGE_COUNT} の範囲にしてください`);
+    throw new Error(`Page count must be between ${CFG.MIN_PAGE_COUNT} and ${CFG.MAX_PAGE_COUNT}`);
   }
 
-  return {
-    title,
-    theme,
-    pageCount,
-    audience,
-    tone,
-    templatePresentationId,
-    curriculumLevel,
-  };
+  return { title, theme, pageCount, audience, tone, templatePresentationId };
 }
 
-function buildSlideSpecWithAI_({ apiKey, model, title, theme, pageCount, audience, tone, curriculumLevel }) {
-  const schema = getSlideSpecJsonSchema_(pageCount);
-  const prompt = buildPrompt_({ title, theme, pageCount, audience, tone, curriculumLevel });
+function generateCurriculum({ apiKey, model, theme, audience, pageCount }) {
+  const prompt = [
+    'You are an expert in exercise physiology, rehabilitation, sports science, and elderly fitness training.',
+    'Create a lecture curriculum for trainer education.',
+    '',
+    `Topic: ${theme}`,
+    `Audience: ${audience}`,
+    `Target slide count: ${pageCount}`,
+    '',
+    'Requirements:',
+    '- Practical education only; avoid abstract explanations.',
+    '- Focus on safety and contraindications.',
+    '- Include trainer instructions and common mistakes across the curriculum flow.',
+    '- Sections should represent lecture topics and be ordered logically for instruction.',
+    `- Produce 6-12 sections suitable for approximately ${pageCount} slides.`,
+    '',
+    'Output JSON only.',
+  ].join('\n');
 
-  const payload = {
-    model,
-    input: [{ role: 'user', content: [{ type: 'input_text', text: prompt }] }],
-    text: {
-      format: {
-        type: 'json_schema',
-        name: schema.name,
-        schema: schema.schema,
-        strict: true,
+  const schema = {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      sections: {
+        type: 'array',
+        minItems: 6,
+        maxItems: 12,
+        items: { type: 'string', minLength: 3 },
       },
     },
-    temperature: 0.4,
+    required: ['sections'],
   };
 
-  const json = fetchOpenAIWithRetry_({
-    url: CFG.OPENAI_ENDPOINT,
-    apiKey,
-    payload,
-  });
-
-  const parsed = extractJsonFromResponses_(json);
-  validateSpec_(parsed, pageCount);
-  return parsed;
+  const result = callOpenAiJsonWithRetry_({ apiKey, model, prompt, schemaName: 'curriculum_schema', schema });
+  if (!Array.isArray(result.sections) || result.sections.length === 0) {
+    throw new Error('Curriculum generation failed: sections missing');
+  }
+  return result;
 }
 
-function fetchOpenAIWithRetry_({ url, apiKey, payload }) {
-  let lastErr = null;
+function generateSlideStructure({ apiKey, model, sections, pageCount }) {
+  const prompt = [
+    'You are designing a professional trainer lecture deck.',
+    'Create a slide structure from lecture sections.',
+    '',
+    `Sections: ${JSON.stringify(sections)}`,
+    `Total slides required: ${pageCount}`,
+    '',
+    'Requirements:',
+    '- Each section should have 1-3 slides.',
+    '- Sum of slideCount across all sections must equal the total slides required.',
+    '- Allocate more slides to safety, coaching workflow, and case practice topics.',
+    '',
+    'Output JSON only.',
+  ].join('\n');
 
-  for (let attempt = 0; attempt <= CFG.RETRY_MAX; attempt++) {
+  const schema = {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      slides: {
+        type: 'array',
+        minItems: 1,
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            section: { type: 'string', minLength: 3 },
+            slideCount: { type: 'integer', minimum: 1, maximum: 3 },
+          },
+          required: ['section', 'slideCount'],
+        },
+      },
+    },
+    required: ['slides'],
+  };
+
+  const result = callOpenAiJsonWithRetry_({ apiKey, model, prompt, schemaName: 'slide_structure_schema', schema });
+  validateSlideStructure_(result, sections, pageCount);
+  return result;
+}
+
+function generateSlideContent({ apiKey, model, section, slideIndex, slideCount, audience, tone }) {
+  const prompt = [
+    'You are a professional trainer educator.',
+    'Convert the following lecture topic into one high-quality training slide.',
+    '',
+    `Topic: ${section}`,
+    `Audience: ${audience}`,
+    `Deck position: Slide ${slideIndex} of ${slideCount}`,
+    `Tone: ${tone}`,
+    '',
+    'Requirements:',
+    '- 3-5 core bullet points focused on practical field execution.',
+    '- Include practical trainer instructions in trainer_tips.',
+    '- Include elderly safety considerations and contraindications where relevant.',
+    '- Include typical trainer mistakes in common_mistakes.',
+    '- speaker_notes should be detailed and usable by lecturers directly (4-7 sentences).',
+    '- Avoid generic textbook wording; include real-world coaching details.',
+    '',
+    'Output JSON only in this exact format:',
+    '{"title":"","points":[],"trainer_tips":[],"common_mistakes":[],"speaker_notes":""}',
+  ].join('\n');
+
+  const schema = {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      title: { type: 'string', minLength: 3 },
+      points: {
+        type: 'array',
+        minItems: 3,
+        maxItems: 5,
+        items: { type: 'string', minLength: 3 },
+      },
+      trainer_tips: {
+        type: 'array',
+        minItems: 2,
+        maxItems: 5,
+        items: { type: 'string', minLength: 3 },
+      },
+      common_mistakes: {
+        type: 'array',
+        minItems: 2,
+        maxItems: 5,
+        items: { type: 'string', minLength: 3 },
+      },
+      speaker_notes: { type: 'string', minLength: 40 },
+    },
+    required: ['title', 'points', 'trainer_tips', 'common_mistakes', 'speaker_notes'],
+  };
+
+  return callOpenAiJsonWithRetry_({ apiKey, model, prompt, schemaName: 'slide_content_schema', schema });
+}
+
+function callOpenAiJsonWithRetry_({ apiKey, model, prompt, schemaName, schema }) {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= CFG.RETRY_MAX; attempt++) {
     try {
-      const res = UrlFetchApp.fetch(url, {
-        method: 'post',
-        contentType: 'application/json',
-        headers: { Authorization: `Bearer ${apiKey}` },
-        payload: JSON.stringify(payload),
-        muteHttpExceptions: true,
-        timeout: CFG.REQUEST_TIMEOUT_MS,
+      const response = callOpenAiRaw_({
+        apiKey,
+        payload: {
+          model,
+          input: [{ role: 'user', content: [{ type: 'input_text', text: prompt }] }],
+          text: {
+            format: {
+              type: 'json_schema',
+              name: schemaName,
+              schema,
+              strict: true,
+            },
+          },
+          temperature: 0.3,
+        },
       });
 
-      const code = res.getResponseCode();
-      const body = res.getContentText();
-
-      if (code >= 200 && code < 300) return safeJsonParse_(body);
-
-      const retryable = code === 429 || (code >= 500 && code <= 599);
-      const msg = `OpenAI API error: HTTP ${code} body=${body}`;
-      if (!retryable) throw new Error(msg);
-
-      lastErr = new Error(msg);
+      return extractJsonFromResponses_(response);
     } catch (e) {
-      lastErr = e;
-    }
-
-    if (attempt < CFG.RETRY_MAX) {
-      const jitter = Math.floor(Math.random() * 250);
-      const sleepMs = CFG.RETRY_BASE_SLEEP_MS * Math.pow(2, attempt) + jitter;
-      Utilities.sleep(sleepMs);
+      lastError = e;
+      if (attempt < CFG.RETRY_MAX) {
+        const wait = CFG.RETRY_BASE_SLEEP_MS * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 200);
+        Utilities.sleep(wait);
+      }
     }
   }
 
-  throw lastErr || new Error('OpenAI API呼び出しに失敗しました');
+  throw new Error(`OpenAI generation failed after ${CFG.RETRY_MAX} attempts: ${lastError && lastError.message}`);
+}
+
+function callOpenAiRaw_({ apiKey, payload }) {
+  const res = UrlFetchApp.fetch(CFG.OPENAI_ENDPOINT, {
+    method: 'post',
+    contentType: 'application/json',
+    headers: { Authorization: `Bearer ${apiKey}` },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true,
+    timeout: CFG.REQUEST_TIMEOUT_MS,
+  });
+
+  const code = res.getResponseCode();
+  const body = res.getContentText();
+  if (code < 200 || code >= 300) {
+    throw new Error(`OpenAI API error HTTP ${code}: ${body}`);
+  }
+
+  return safeJsonParse_(body);
 }
 
 function extractJsonFromResponses_(json) {
-  if (!json) throw new Error('OpenAI応答が空です');
-
-  if (json.output_parsed && typeof json.output_parsed === 'object') {
-    return json.output_parsed;
-  }
+  if (!json) throw new Error('OpenAI response is empty');
+  if (json.output_parsed && typeof json.output_parsed === 'object') return json.output_parsed;
 
   const texts = [];
   if (Array.isArray(json.output)) {
-    json.output.forEach((outItem) => {
-      if (!outItem || !Array.isArray(outItem.content)) return;
-      outItem.content.forEach((part) => {
+    json.output.forEach((item) => {
+      if (!item || !Array.isArray(item.content)) return;
+      item.content.forEach((part) => {
         if (part && typeof part.text === 'string') texts.push(part.text);
       });
     });
   }
 
   if (texts.length > 0) {
-    const joined = texts.join('\n').trim();
-    const clean = joined.replace(/```json|```/g, '').trim();
-    return safeJsonParse_(clean);
+    const joined = texts.join('\n').replace(/```json|```/g, '').trim();
+    return safeJsonParse_(joined);
   }
 
   if (typeof json.text === 'string') return safeJsonParse_(json.text);
-
-  throw new Error('OpenAI応答からJSONを抽出できませんでした（レスポンス形式が想定外）');
+  throw new Error('Could not extract JSON from OpenAI response');
 }
 
-function safeJsonParse_(s) {
+function safeJsonParse_(raw) {
   try {
-    return JSON.parse(s);
+    return JSON.parse(raw);
   } catch (e) {
-    throw new Error(`JSON parse failed: ${e.message}\nraw=${String(s).slice(0, 1000)}`);
+    throw new Error(`JSON parse failed: ${e.message}; raw=${String(raw).slice(0, 1000)}`);
   }
 }
 
-function getSlideSpecJsonSchema_(pageCount) {
-  return {
-    name: 'training_slides_schema',
-    schema: {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        curriculum: {
-          type: 'object',
-          additionalProperties: false,
-          properties: {
-            courseTitle: { type: 'string', minLength: 1 },
-            learningGoals: {
-              type: 'array',
-              minItems: 3,
-              maxItems: 5,
-              items: { type: 'string', minLength: 1 },
-            },
-            modules: {
-              type: 'array',
-              minItems: 3,
-              maxItems: 8,
-              items: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  name: { type: 'string', minLength: 1 },
-                  durationMinutes: { type: 'integer', minimum: 5, maximum: 180 },
-                  objective: { type: 'string', minLength: 1 },
-                },
-                required: ['name', 'durationMinutes', 'objective'],
-              },
-            },
-          },
-          required: ['courseTitle', 'learningGoals', 'modules'],
-        },
-        slides: {
-          type: 'array',
-          minItems: pageCount,
-          maxItems: pageCount,
-          items: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              title: { type: 'string', minLength: 1 },
-              points: {
-                type: 'array',
-                minItems: 3,
-                maxItems: 5,
-                items: { type: 'string', minLength: 1 },
-              },
-              speakerNotes: { type: 'string', minLength: 1 },
-            },
-            required: ['title', 'points', 'speakerNotes'],
-          },
-        },
-      },
-      required: ['curriculum', 'slides'],
-    },
-  };
+function validateSlideStructure_(structure, sections, pageCount) {
+  if (!structure || !Array.isArray(structure.slides)) {
+    throw new Error('Slide structure is invalid');
+  }
+
+  const sectionSet = new Set(sections);
+  let total = 0;
+  structure.slides.forEach((entry, index) => {
+    if (!entry || typeof entry.section !== 'string' || !Number.isInteger(entry.slideCount)) {
+      throw new Error(`Slide structure item ${index + 1} is invalid`);
+    }
+    if (!sectionSet.has(entry.section)) {
+      throw new Error(`Unknown section in slide structure: ${entry.section}`);
+    }
+    if (entry.slideCount < 1 || entry.slideCount > 3) {
+      throw new Error(`slideCount must be 1-3: ${entry.section}`);
+    }
+    total += entry.slideCount;
+  });
+
+  if (total !== pageCount) {
+    throw new Error(`Slide structure total mismatch. expected=${pageCount}, actual=${total}`);
+  }
 }
 
-function validateSpec_(spec, pageCount) {
-  if (!spec || !spec.curriculum || !Array.isArray(spec.slides)) {
-    throw new Error('spec構造が不正です（curriculum/slides）');
-  }
-
-  if (spec.slides.length !== pageCount) {
-    throw new Error(`スライド枚数が一致しません：期待=${pageCount} 実際=${spec.slides.length}`);
-  }
-
-  spec.slides.forEach((slide, idx) => {
-    if (!slide.title || !Array.isArray(slide.points) || slide.points.length < 3 || !slide.speakerNotes) {
-      throw new Error(`スライド${idx + 1}の構造が不正です`);
+function buildSlideBlueprints_(slidesBySection, pageCount) {
+  const list = [];
+  slidesBySection.forEach((item) => {
+    for (let i = 0; i < item.slideCount; i++) {
+      list.push({ section: item.section });
     }
   });
+
+  if (list.length !== pageCount) {
+    throw new Error(`Slide blueprint count mismatch: expected ${pageCount}, got ${list.length}`);
+  }
+  return list;
 }
 
-function buildPrompt_({ title, theme, pageCount, audience, tone, curriculumLevel }) {
-  return `
-あなたは研修設計と運動指導に精通したインストラクショナルデザイナーです。
-以下の条件で「トレーナー研修」のカリキュラムとスライドを作成してください。
-
-【タイトル】
-${title}
-
-【テーマ】
-${theme}
-
-【対象】
-${audience}
-
-【トーン】
-${tone}
-
-【難易度】
-${curriculumLevel}
-
-【必須要件】
-- スライドは合計 ${pageCount} ページ
-- 各スライドは points を 3〜5 個
-- speakerNotes は登壇者がそのまま読める具体性で 2〜4 文
-- curriculum.modules は時系列で、各moduleに所要時間(分)を設定
-- 抽象論だけでなく、現場での注意点・禁忌・評価指標を含める
-- 高齢者指導リスク(骨粗鬆症/循環器リスク/疼痛)への配慮を含める
-
-【出力ルール】
-- 必ず指定JSONスキーマに厳密準拠
-- JSON以外の文字を出力しない
-  `.trim();
-}
-
-function createSlidesFromSpec_({ spec, title, templatePresentationId }) {
-  const finalTitle = `${CFG.APP_TITLE_PREFIX}${title}`;
+function createSlides({ title, templatePresentationId, curriculum, slides }) {
   const presentation = templatePresentationId
-    ? copyTemplatePresentation_(templatePresentationId, finalTitle)
-    : SlidesApp.create(finalTitle);
+    ? copyTemplatePresentation_(templatePresentationId, `${CFG.APP_TITLE_PREFIX}${title}`)
+    : SlidesApp.create(`${CFG.APP_TITLE_PREFIX}${title}`);
 
   cleanupDefaultSlides_(presentation);
 
-  spec.slides.forEach((slideSpec) => {
-    const slide = presentation.appendSlide(SlidesApp.PredefinedLayout.TITLE_AND_BODY);
-    setTitleAndBody_(slide, slideSpec.title, slideSpec.points);
+  // Agenda slide from curriculum sections
+  const agendaSlide = presentation.appendSlide(SlidesApp.PredefinedLayout.TITLE_AND_BODY);
+  setTitleAndBody_(agendaSlide, `${title} - Curriculum`, curriculum.sections.map((s, i) => `${i + 1}. ${s}`));
+  agendaSlide.getNotesPage().getSpeakerNotesShape().getText().setText(
+    'Use this slide to explain learning flow, expected outcomes, and where safety checkpoints appear in the training.'
+  );
 
-    const notesShape = slide.getNotesPage().getSpeakerNotesShape();
-    notesShape.getText().setText(slideSpec.speakerNotes);
+  slides.forEach((content) => {
+    const slide = presentation.appendSlide(SlidesApp.PredefinedLayout.TITLE_AND_BODY);
+    const bodyLines = [];
+    content.points.forEach((p) => bodyLines.push(p));
+    bodyLines.push('');
+    bodyLines.push('Trainer tips:');
+    content.trainer_tips.forEach((t) => bodyLines.push(`- ${t}`));
+    bodyLines.push('');
+    bodyLines.push('Common mistakes:');
+    content.common_mistakes.forEach((m) => bodyLines.push(`- ${m}`));
+
+    setTitleAndBody_(slide, content.title, bodyLines);
+    slide.getNotesPage().getSpeakerNotesShape().getText().setText(content.speaker_notes);
   });
 
-  appendCurriculumSlide_(presentation, spec.curriculum);
   return presentation.getId();
-}
-
-function appendCurriculumSlide_(presentation, curriculum) {
-  const slide = presentation.insertSlide(0, SlidesApp.PredefinedLayout.TITLE_AND_BODY);
-  const moduleLines = curriculum.modules.map((m, i) => `${i + 1}. ${m.name}（${m.durationMinutes}分）: ${m.objective}`);
-  const body = ['学習目標', ...curriculum.learningGoals.map((g) => `- ${g}`), '', 'モジュール構成', ...moduleLines].join('\n');
-  setTitleAndBody_(slide, `カリキュラム概要: ${curriculum.courseTitle}`, body.split('\n'));
-
-  const notesShape = slide.getNotesPage().getSpeakerNotesShape();
-  notesShape.getText().setText('このスライドで本研修の全体像を説明し、受講者の期待値を揃えてください。');
 }
 
 function copyTemplatePresentation_(templateId, newName) {
@@ -382,24 +420,30 @@ function cleanupDefaultSlides_(presentation) {
   if (!hasText) first.remove();
 }
 
-function setTitleAndBody_(slide, title, points) {
+function setTitleAndBody_(slide, title, lines) {
   const titlePh = slide.getPlaceholder(SlidesApp.PlaceholderType.TITLE);
   const bodyPh = slide.getPlaceholder(SlidesApp.PlaceholderType.BODY);
-  const bodyText = points.map((point) => (point.startsWith('-') || point.match(/^\d+\./) ? point : `• ${point}`)).join('\n');
+
+  const bodyText = (lines || [])
+    .map((line) => {
+      if (!line) return '';
+      if (/^(\d+\.|-|•|Trainer tips:|Common mistakes:)/.test(line)) return line;
+      return `• ${line}`;
+    })
+    .join('\n');
 
   if (titlePh) titlePh.asShape().getText().setText(title);
-
   if (bodyPh) {
     bodyPh.asShape().getText().setText(bodyText);
   } else {
-    const box = slide.insertShape(SlidesApp.ShapeType.TEXT_BOX, 60, 120, 600, 300);
+    const box = slide.insertShape(SlidesApp.ShapeType.TEXT_BOX, 60, 110, 610, 320);
     box.getText().setText(bodyText);
   }
 }
 
 function getApiKey_() {
   const key = PropertiesService.getScriptProperties().getProperty('OPENAI_API_KEY');
-  if (!key) throw new Error('スクリプトプロパティ OPENAI_API_KEY が未設定です');
+  if (!key) throw new Error('Script property OPENAI_API_KEY is not set');
   return key;
 }
 
