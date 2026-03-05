@@ -187,6 +187,7 @@ function generateSlideStructure({ apiKey, model, sections, pageCount }) {
   validateSlideStructure_(result, sections, pageCount);
   return result;
 }
+<<<<<<< ours
 
 function generateSlideContent({ apiKey, model, section, slideIndex, slideCount, audience, tone }) {
   const prompt = [
@@ -238,6 +239,59 @@ function generateSlideContent({ apiKey, model, section, slideIndex, slideCount, 
     required: ['title', 'points', 'trainer_tips', 'common_mistakes', 'speaker_notes'],
   };
 
+=======
+
+function generateSlideContent({ apiKey, model, section, slideIndex, slideCount, audience, tone }) {
+  const prompt = [
+    'You are a professional trainer educator.',
+    'Convert the following lecture topic into one high-quality training slide.',
+    '',
+    `Topic: ${section}`,
+    `Audience: ${audience}`,
+    `Deck position: Slide ${slideIndex} of ${slideCount}`,
+    `Tone: ${tone}`,
+    '',
+    'Requirements:',
+    '- 3-5 core bullet points focused on practical field execution.',
+    '- Include practical trainer instructions in trainer_tips.',
+    '- Include elderly safety considerations and contraindications where relevant.',
+    '- Include typical trainer mistakes in common_mistakes.',
+    '- speaker_notes should be detailed and usable by lecturers directly (4-7 sentences).',
+    '- Avoid generic textbook wording; include real-world coaching details.',
+    '',
+    'Output JSON only in this exact format:',
+    '{"title":"","points":[],"trainer_tips":[],"common_mistakes":[],"speaker_notes":""}',
+  ].join('\n');
+
+  const schema = {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      title: { type: 'string', minLength: 3 },
+      points: {
+        type: 'array',
+        minItems: 3,
+        maxItems: 5,
+        items: { type: 'string', minLength: 3 },
+      },
+      trainer_tips: {
+        type: 'array',
+        minItems: 2,
+        maxItems: 5,
+        items: { type: 'string', minLength: 3 },
+      },
+      common_mistakes: {
+        type: 'array',
+        minItems: 2,
+        maxItems: 5,
+        items: { type: 'string', minLength: 3 },
+      },
+      speaker_notes: { type: 'string', minLength: 40 },
+    },
+    required: ['title', 'points', 'trainer_tips', 'common_mistakes', 'speaker_notes'],
+  };
+
+>>>>>>> theirs
   return callOpenAiJsonWithRetry_({ apiKey, model, prompt, schemaName: 'slide_content_schema', schema });
 }
 
@@ -336,10 +390,17 @@ function validateSlideStructure_(structure, sections, pageCount) {
   structure.slides.forEach((entry, index) => {
     if (!entry || typeof entry.section !== 'string' || !Number.isInteger(entry.slideCount)) {
       throw new Error(`Slide structure item ${index + 1} is invalid`);
+<<<<<<< ours
     }
     if (!sectionSet.has(entry.section)) {
       throw new Error(`Unknown section in slide structure: ${entry.section}`);
     }
+=======
+    }
+    if (!sectionSet.has(entry.section)) {
+      throw new Error(`Unknown section in slide structure: ${entry.section}`);
+    }
+>>>>>>> theirs
     if (entry.slideCount < 1 || entry.slideCount > 3) {
       throw new Error(`slideCount must be 1-3: ${entry.section}`);
     }
